@@ -308,6 +308,21 @@ const updateWarning = () => {
 };
 
 const handleSubmit = () => {
+  if (formData.is_approved === 1) {
+    if (formData.approval_check === 0) {
+      message.error('批准文号校验未通过，不能发布');
+      return;
+    }
+    if (formData.risk_check === 0) {
+      message.error('风险警示语校验未通过，不能发布');
+      return;
+    }
+    if (formData.offlabel_check === 0) {
+      message.error('存在超说明书表述，不能发布');
+      return;
+    }
+  }
+
   const actionText = formData.is_approved === 1 ? '通过并发布' : '驳回并退回';
   Modal.confirm({
     title: `确认${actionText}？`,
@@ -320,8 +335,14 @@ const handleSubmit = () => {
     onOk: async () => {
       submitting.value = true;
       try {
-        await legalApi.submit(route.params.id, formData);
-        message.success(formData.is_approved === 1 ? '审核通过，已发布' : '审核已驳回');
+        const result = await legalApi.submit(route.params.id, formData);
+        const expectedStatus = formData.is_approved === 1 ? 'PUBLISHED' : 'LEGAL_REJECTED';
+        const returnedStatus = result.status || result.data?.status;
+        if (returnedStatus && returnedStatus !== expectedStatus) {
+          message.warning(`状态流转异常：期望 ${expectedStatus}，实际 ${returnedStatus}`);
+        } else {
+          message.success(formData.is_approved === 1 ? '审核通过，已发布，素材已锁定' : '审核已驳回，素材已退回市场部');
+        }
         router.push('/legal');
       } catch (e) {
         message.error(e.message);

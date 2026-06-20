@@ -1,6 +1,65 @@
 const request = require('supertest');
 const app = require('../server');
 
+const MARKETING_HEADERS = { 'x-operator': 'TestUser', 'x-role': 'MARKETING' };
+const MEDICAL_HEADERS = { 'x-operator': 'LiMedical', 'x-role': 'MEDICAL' };
+const LEGAL_HEADERS = { 'x-operator': 'WangLegal', 'x-role': 'LEGAL' };
+
+function createValidMaterial(extra = {}) {
+  return {
+    title: '测试药品广告',
+    content: '本产品用于治疗2型糖尿病，请在医生指导下使用',
+    drug_name: '测试药品',
+    approval_number: '国药准字H12345678',
+    indication: '用于治疗2型糖尿病',
+    contraindication: '孕妇禁用',
+    medical_evidence: '三期临床试验数据支持，N Engl J Med 2023',
+    risk_warning: '可能引起低血糖反应，请仔细阅读说明书',
+    ...extra
+  };
+}
+
+async function createAndSubmitMaterial(extra = {}) {
+  const createRes = await request(app)
+    .post('/api/materials')
+    .send(createValidMaterial(extra))
+    .set(MARKETING_HEADERS);
+  expect(createRes.status).toBe(201);
+  const materialId = createRes.body.data.id;
+  const submitRes = await request(app)
+    .post(`/api/materials/${materialId}/submit`)
+    .set(MARKETING_HEADERS);
+  expect(submitRes.status).toBe(200);
+  expect(submitRes.body.data.status).toBe('PENDING_MEDICAL');
+  return materialId;
+}
+
+async function medicalApprove(materialId, headers = MEDICAL_HEADERS) {
+  return await request(app)
+    .post(`/api/medical/${materialId}/opinion`)
+    .send({
+      indication_check: 1,
+      contraindication_check: 1,
+      evidence_check: 1,
+      is_approved: 1,
+      opinion: '适应症核对无误，禁忌标注正确，医学证据充分，同意通过。'
+    })
+    .set(headers);
+}
+
+async function legalApproveAndPublish(materialId, headers = LEGAL_HEADERS) {
+  return await request(app)
+    .post(`/api/legal/${materialId}/opinion`)
+    .send({
+      approval_number_check: 1,
+      risk_warning_check: 1,
+      off_label_check: 1,
+      is_approved: 1,
+      opinion: '批准文号格式正确，风险警示语充分，同意发布。'
+    })
+    .set(headers);
+}
+
 describe('药品广告合规审查系统 - 集成测试', () => {
   let materialId;
 
@@ -13,18 +72,10 @@ describe('药品广告合规审查系统 - 集成测试', () => {
     test('1.1 创建素材 - 超说明书表述应该被拦截', async () => {
       const res = await request(app)
         .post('/api/materials')
-        .send({
-          title: '测试药品广告',
-          content: '本产品可以根治糖尿病，无毒副作用，治愈率100%',
-          drug_name: '测试药品',
-          approval_number: '国药准字H12345678',
-          indication: '用于治疗2型糖尿病',
-          contraindication: '孕妇禁用',
-          medical_evidence: '三期临床试验数据支持，N Engl J Med 2023',
-          risk_warning: '可能引起低血糖反应'
-        })
-        .set('x-operator', 'TestUser')
-        .set('x-role', 'MARKETING');
+        .send(createValidMaterial({
+          content: '本产品可以根治糖尿病，无毒副作用，治愈率100%'
+        }))
+        .set(MARKETING_HEADERS);
       
       expect(res.status).toBe(400);
       expect(res.body.error).toContain('超说明书表述');
@@ -33,18 +84,8 @@ describe('药品广告合规审查系统 - 集成测试', () => {
     test('1.2 创建素材 - 合法内容应该成功', async () => {
       const res = await request(app)
         .post('/api/materials')
-        .send({
-          title: '测试药品广告',
-          content: '本产品用于治疗2型糖尿病，请在医生指导下使用',
-          drug_name: '测试药品',
-          approval_number: '国药准字H12345678',
-          indication: '用于治疗2型糖尿病',
-          contraindication: '孕妇禁用',
-          medical_evidence: '三期临床试验数据支持，N Engl J Med 2023',
-          risk_warning: '可能引起低血糖反应'
-        })
-        .set('x-operator', 'TestUser')
-        .set('x-role', 'MARKETING');
+        .send(createValidMaterial())
+        .set(MARKETING_HEADERS);
       
       expect(res.status).toBe(201);
       expect(res.body.data.title).toBe('测试药品广告');
@@ -55,8 +96,7 @@ describe('药品广告合规审查系统 - 集成测试', () => {
     test('1.3 提交审核 - 状态应该流转到待医学审核', async () => {
       const res = await request(app)
         .post(`/api/materials/${materialId}/submit`)
-        .set('x-operator', 'TestUser')
-        .set('x-role', 'MARKETING');
+        .set(MARKETING_HEADERS);
       
       expect(res.status).toBe(200);
       expect(res.body.data.status).toBe('PENDING_MEDICAL');
@@ -65,8 +105,7 @@ describe('药品广告合规审查系统 - 集成测试', () => {
     test('1.4 获取素材列表', async () => {
       const res = await request(app)
         .get('/api/materials')
-        .set('x-operator', 'TestUser')
-        .set('x-role', 'MARKETING');
+        .set(MARKETING_HEADERS);
       
       expect(res.status).toBe(200);
       expect(res.body.data.list.length).toBeGreaterThan(0);
@@ -75,8 +114,7 @@ describe('药品广告合规审查系统 - 集成测试', () => {
     test('1.5 获取素材详情 - 应该包含完整信息', async () => {
       const res = await request(app)
         .get(`/api/materials/${materialId}`)
-        .set('x-operator', 'TestUser')
-        .set('x-role', 'MARKETING');
+        .set(MARKETING_HEADERS);
       
       expect(res.status).toBe(200);
       expect(res.body.data.id).toBe(materialId);
@@ -88,25 +126,14 @@ describe('药品广告合规审查系统 - 集成测试', () => {
     test('2.1 获取待医学审核列表', async () => {
       const res = await request(app)
         .get('/api/medical/pending')
-        .set('x-operator', 'MedicalReviewer')
-        .set('x-role', 'MEDICAL');
+        .set(MEDICAL_HEADERS);
       
       expect(res.status).toBe(200);
       expect(res.body.data.list.length).toBeGreaterThan(0);
     });
 
     test('2.2 医学审核 - 提交医学意见', async () => {
-      const res = await request(app)
-        .post(`/api/medical/${materialId}/opinion`)
-        .send({
-          indication_check: 1,
-          contraindication_check: 1,
-          evidence_check: 1,
-          is_approved: 1,
-          opinion: '适应症核对无误，禁忌标注正确，医学证据充分，同意通过。'
-        })
-        .set('x-operator', 'MedicalReviewer')
-        .set('x-role', 'MEDICAL');
+      const res = await medicalApprove(materialId);
       
       expect(res.status).toBe(200);
       expect(res.body.data.status).toBe('PENDING_LEGAL');
@@ -120,8 +147,7 @@ describe('药品广告合规审查系统 - 集成测试', () => {
           is_approved: 1,
           opinion: '测试'
         })
-        .set('x-operator', 'TestUser')
-        .set('x-role', 'MARKETING');
+        .set(MARKETING_HEADERS);
       
       expect(res.status).toBe(403);
     });
@@ -131,45 +157,41 @@ describe('药品广告合规审查系统 - 集成测试', () => {
     test('3.1 获取待法务审核列表', async () => {
       const res = await request(app)
         .get('/api/legal/pending')
-        .set('x-operator', 'LegalReviewer')
-        .set('x-role', 'LEGAL');
+        .set(LEGAL_HEADERS);
       
       expect(res.status).toBe(200);
       expect(res.body.data.list.length).toBeGreaterThan(0);
     });
 
     test('3.2 法务审核 - 批准文号格式错误应该被拦截', async () => {
+      const badApprovalMaterialId = await createAndSubmitMaterial({
+        approval_number: 'H12345678'
+      });
+      await medicalApprove(badApprovalMaterialId);
+
       const res = await request(app)
-        .post(`/api/legal/${materialId}/opinion`)
+        .post(`/api/legal/${badApprovalMaterialId}/opinion`)
         .send({
           approval_number_check: 0,
           risk_warning_check: 1,
           off_label_check: 1,
-          is_approved: 0,
-          opinion: '批准文号格式有误，请核对。',
-          suggestion: '请使用正确的国药准字格式，如：国药准字H12345678'
+          is_approved: 1,
+          opinion: '尝试通过但批准文号格式有误'
         })
-        .set('x-operator', 'LegalReviewer')
-        .set('x-role', 'LEGAL');
+        .set(LEGAL_HEADERS);
       
       expect(res.status).toBe(400);
+      expect(res.body.error).toContain('批准文号');
     });
 
     test('3.3 修改素材后重新提交', async () => {
       const updateRes = await request(app)
         .put(`/api/materials/${materialId}`)
-        .send({
+        .send(createValidMaterial({
           title: '测试药品广告（修订）',
-          content: '本产品用于治疗2型糖尿病，请在医生指导下使用',
-          drug_name: '测试药品',
-          approval_number: '国药准字H12345678',
-          indication: '用于治疗2型糖尿病',
-          contraindication: '孕妇禁用',
-          medical_evidence: '三期临床试验数据支持，N Engl J Med 2023',
           risk_warning: '可能引起低血糖反应，请定期监测血糖，请仔细阅读说明书'
-        })
-        .set('x-operator', 'TestUser')
-        .set('x-role', 'MARKETING');
+        }))
+        .set(MARKETING_HEADERS);
       
       expect(updateRes.status).toBe(200);
       expect(updateRes.body.data.version).toBeGreaterThanOrEqual(2);
@@ -227,6 +249,188 @@ describe('药品广告合规审查系统 - 集成测试', () => {
       
       expect(res.status).toBe(200);
       expect(res.body.isValid).toBe(true);
+    });
+  });
+
+  describe('5. 医学审核人写入回归测试', () => {
+    let regressionMaterialId;
+
+    beforeAll(async () => {
+      regressionMaterialId = await createAndSubmitMaterial();
+    });
+
+    test('5.1 缺失医学证据 - 退回市场部', async () => {
+      const noEvidenceMaterialId = await createAndSubmitMaterial({
+        medical_evidence: '不足'
+      });
+
+      const res = await request(app)
+        .post(`/api/medical/${noEvidenceMaterialId}/opinion`)
+        .send({
+          indication_check: 1,
+          contraindication_check: 1,
+          evidence_check: 0,
+          is_approved: 0,
+          opinion: '医学证据不充分，请补充临床试验数据。',
+          suggestion: '请提供三期临床试验报告或权威文献支持。'
+        })
+        .set(MEDICAL_HEADERS);
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.status).toBe('MEDICAL_REJECTED');
+      expect(res.body.data.reviewer).toBe('LiMedical');
+    });
+
+    test('5.2 缺失医学证据 - 尝试通过应被拦截', async () => {
+      const noEvidenceMaterialId = await createAndSubmitMaterial({
+        medical_evidence: '不足'
+      });
+
+      const res = await request(app)
+        .post(`/api/medical/${noEvidenceMaterialId}/opinion`)
+        .send({
+          indication_check: 1,
+          contraindication_check: 1,
+          evidence_check: 0,
+          is_approved: 1,
+          opinion: '尝试通过'
+        })
+        .set(MEDICAL_HEADERS);
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('医学证据缺失');
+    });
+
+    test('5.3 医学审核通过 - 审核人正确写入并流转到法务', async () => {
+      const res = await medicalApprove(regressionMaterialId);
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.status).toBe('PENDING_LEGAL');
+      expect(res.body.data.reviewer).toBe('LiMedical');
+
+      const opinionsRes = await request(app)
+        .get(`/api/medical/${regressionMaterialId}/opinions`)
+        .set(MEDICAL_HEADERS);
+
+      expect(opinionsRes.status).toBe(200);
+      const latestOpinion = opinionsRes.body.data[0];
+      expect(latestOpinion.reviewer).toBe('LiMedical');
+      expect(latestOpinion.is_approved).toBe(1);
+      expect(latestOpinion.evidence_check).toBe(1);
+    });
+
+    test('5.4 医学审核通过 - 审核痕迹记录操作人和', async () => {
+      const detailRes = await request(app)
+        .get(`/api/materials/${regressionMaterialId}`)
+        .set(MEDICAL_HEADERS);
+
+      const medicalTrails = detailRes.body.data.audit_trails.filter(
+        t => t.action === 'MEDICAL_APPROVE'
+      );
+      expect(medicalTrails.length).toBeGreaterThan(0);
+      expect(medicalTrails[0].operator).toBe('LiMedical');
+      expect(medicalTrails[0].operator_role).toBe('MEDICAL');
+      expect(medicalTrails[0].to_status).toBe('PENDING_LEGAL');
+    });
+  });
+
+  describe('6. 法务审核发布回归测试', () => {
+    let legalMaterialId;
+
+    beforeAll(async () => {
+      legalMaterialId = await createAndSubmitMaterial();
+      const medRes = await medicalApprove(legalMaterialId);
+      expect(medRes.status).toBe(200);
+      expect(medRes.body.data.status).toBe('PENDING_LEGAL');
+    });
+
+    test('6.1 法务发布 - 审核人写入并流转到已发布', async () => {
+      const res = await legalApproveAndPublish(legalMaterialId);
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.status).toBe('PUBLISHED');
+      expect(res.body.data.reviewer).toBe('WangLegal');
+
+      const detailRes = await request(app)
+        .get(`/api/materials/${legalMaterialId}`)
+        .set(LEGAL_HEADERS);
+
+      const legalOpinions = detailRes.body.data.legal_opinions;
+      expect(legalOpinions.length).toBeGreaterThan(0);
+      expect(legalOpinions[0].reviewer).toBe('WangLegal');
+      expect(legalOpinions[0].is_approved).toBe(1);
+    });
+
+    test('6.2 法务发布后 - 素材被锁定不可修改', async () => {
+      const res = await request(app)
+        .put(`/api/materials/${legalMaterialId}`)
+        .send(createValidMaterial({ title: '试图修改已发布素材' }))
+        .set(MARKETING_HEADERS);
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('已发布');
+    });
+
+    test('6.3 法务发布后 - published_versions 记录发布人', async () => {
+      const detailRes = await request(app)
+        .get(`/api/materials/${legalMaterialId}`)
+        .set(LEGAL_HEADERS);
+
+      const publishedVersions = detailRes.body.data.published_versions;
+      expect(publishedVersions.length).toBeGreaterThan(0);
+      expect(publishedVersions[0].published_by).toBe('WangLegal');
+      expect(publishedVersions[0].is_locked).toBe(1);
+    });
+
+    test('6.4 法务发布后 - 审核痕迹包含发布记录', async () => {
+      const detailRes = await request(app)
+        .get(`/api/materials/${legalMaterialId}`)
+        .set(LEGAL_HEADERS);
+
+      const trails = detailRes.body.data.audit_trails;
+      const publishTrail = trails.find(t => t.action === 'LEGAL_APPROVE');
+      expect(publishTrail).toBeDefined();
+      expect(publishTrail.operator).toBe('WangLegal');
+      expect(publishTrail.operator_role).toBe('LEGAL');
+      expect(publishTrail.to_status).toBe('PUBLISHED');
+    });
+  });
+
+  describe('7. 审核人缺失防护回归测试', () => {
+    test('7.1 缺少 x-operator 请求头应被拒绝', async () => {
+      const submitMaterialId = await createAndSubmitMaterial();
+      const res = await request(app)
+        .post(`/api/medical/${submitMaterialId}/opinion`)
+        .send({
+          indication_check: 1,
+          contraindication_check: 1,
+          evidence_check: 1,
+          is_approved: 1,
+          opinion: '测试缺少审核人'
+        })
+        .set('x-role', 'MEDICAL');
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('审核人信息');
+    });
+
+    test('7.2 缺少 x-role 请求头应被拒绝', async () => {
+      const submitMaterialId = await createAndSubmitMaterial();
+      const res = await request(app)
+        .post(`/api/medical/${submitMaterialId}/opinion`)
+        .send({
+          indication_check: 1,
+          contraindication_check: 1,
+          evidence_check: 1,
+          is_approved: 1,
+          opinion: '测试缺少角色'
+        })
+        .set('x-operator', 'LiMedical');
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toContain('角色信息');
     });
   });
 });

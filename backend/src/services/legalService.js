@@ -7,9 +7,13 @@ const {
   checkOffLabelContent,
   canTransition 
 } = require('../utils/validation');
-const { getMaterialById } = require('./materialService');
+const { getMaterialById, getMaterialDetail } = require('./materialService');
 
 function submitLegalOpinion(materialId, data, operator) {
+  if (!operator) {
+    throw new Error('审核人信息缺失，无法提交法务审核意见');
+  }
+
   const material = getMaterialById(materialId);
   if (!material) {
     throw new Error('素材不存在');
@@ -28,25 +32,28 @@ function submitLegalOpinion(materialId, data, operator) {
     is_approved
   } = data;
 
-  const safeSuggestion = suggestion !== undefined ? suggestion : null;
-  const safeOpinion = opinion !== undefined ? opinion : null;
-
-  const approvalCheck = checkApprovalNumber(material.approval_number);
-  if (!approvalCheck.isValid) {
-    throw new Error(approvalCheck.reason);
-  }
-
-  const riskCheck = checkRiskWarning(material.content, material.risk_warning);
-  if (!riskCheck.isValid) {
-    throw new Error(riskCheck.reason);
-  }
-
-  const offLabelCheck = checkOffLabelContent(material.content, material.indication);
-  if (!offLabelCheck.isValid) {
-    throw new Error(`内容包含超说明书表述：${offLabelCheck.violations.join('、')}`);
-  }
+  const safeSuggestion = suggestion !== undefined && suggestion !== null ? suggestion : null;
+  const safeOpinion = opinion !== undefined && opinion !== null ? opinion : null;
 
   const approved = parseInt(is_approved) === 1;
+
+  if (approved) {
+    const approvalCheck = checkApprovalNumber(material.approval_number);
+    if (!approvalCheck.isValid) {
+      throw new Error(approvalCheck.reason);
+    }
+
+    const riskCheck = checkRiskWarning(material.content, material.risk_warning);
+    if (!riskCheck.isValid) {
+      throw new Error(riskCheck.reason);
+    }
+
+    const offLabelCheck = checkOffLabelContent(material.content, material.indication);
+    if (!offLabelCheck.isValid) {
+      throw new Error(`内容包含超说明书表述：${offLabelCheck.violations.join('、')}，不能审核通过`);
+    }
+  }
+
   const newVersion = material.version + 1;
   const targetStatus = approved ? 'PUBLISHED' : 'LEGAL_REJECTED';
   const targetStep = approved ? 'PUBLISHED' : 'MARKETING';
@@ -118,12 +125,13 @@ function submitLegalOpinion(materialId, data, operator) {
       toStatus: targetStatus,
       remark: approved 
         ? `${actionName}，版本已发布并锁定，不可修改` 
-        : `${actionName}：${opinion || '审核不通过'}`,
+        : `${actionName}：${safeOpinion || '审核不通过'}`,
       changes: {
-        approval_number_check,
-        risk_warning_check,
-        off_label_check,
-        suggestion
+        approval_number_check: approval_number_check ? 1 : 0,
+        risk_warning_check: risk_warning_check ? 1 : 0,
+        off_label_check: off_label_check ? 1 : 0,
+        reviewer: operator,
+        suggestion: safeSuggestion
       }
     });
 
@@ -133,12 +141,16 @@ function submitLegalOpinion(materialId, data, operator) {
     throw new Error(`法务审核失败：${e.message}`);
   }
 
+  const updatedMaterial = getMaterialDetail(materialId);
+
   return {
     success: true,
     status: targetStatus,
+    reviewer: operator,
     message: approved 
       ? '法务审核通过，版本已发布并锁定，不可修改' 
-      : '法务审核已驳回'
+      : '法务审核已驳回，素材已退回市场部',
+    data: updatedMaterial
   };
 }
 

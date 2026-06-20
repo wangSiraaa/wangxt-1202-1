@@ -1,49 +1,68 @@
 import { defineStore } from 'pinia';
 
+const ROLE_USERS = {
+  MARKETING: { name: 'ZhangMarket', displayName: '张市场', role: 'MARKETING', roleName: '市场部' },
+  MEDICAL: { name: 'LiMedical', displayName: '李医学', role: 'MEDICAL', roleName: '医学审核' },
+  LEGAL: { name: 'WangLegal', displayName: '王法务', role: 'LEGAL', roleName: '法务' }
+};
+
+const STORAGE_KEY = 'userStore';
+
+function readStorage() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const data = JSON.parse(raw);
+      if (data && data.currentUser) {
+        return data.currentUser;
+      }
+    }
+  } catch (e) {
+    // ignore parse errors
+  }
+  return null;
+}
+
+function writeStorage(user) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ currentUser: user }));
+  } catch (e) {
+    // ignore storage errors
+  }
+}
+
 export const useUserStore = defineStore('user', {
   state: () => ({
     currentUser: null,
     role: 'MARKETING'
   }),
-  
+
   getters: {
     isMarketing: (state) => state.role === 'MARKETING',
     isMedical: (state) => state.role === 'MEDICAL',
     isLegal: (state) => state.role === 'LEGAL'
   },
-  
+
   actions: {
     setUser(user) {
       this.currentUser = user;
       this.role = user.role;
-      localStorage.setItem('userStore', JSON.stringify({ currentUser: user }));
+      writeStorage(user);
     },
-    
+
     setRole(role) {
+      const user = ROLE_USERS[role] || ROLE_USERS.MARKETING;
+      this.currentUser = user;
       this.role = role;
-      const users = {
-        MARKETING: { name: '张市场', role: 'MARKETING', roleName: '市场部' },
-        MEDICAL: { name: '李医学', role: 'MEDICAL', roleName: '医学审核' },
-        LEGAL: { name: '王法务', role: 'LEGAL', roleName: '法务' }
-      };
-      this.currentUser = users[role];
-      localStorage.setItem('userStore', JSON.stringify({ currentUser: this.currentUser }));
+      writeStorage(user);
     },
-    
+
     initFromStorage() {
-      try {
-        const stored = localStorage.getItem('userStore');
-        if (stored) {
-          const data = JSON.parse(stored);
-          if (data.currentUser) {
-            this.currentUser = data.currentUser;
-            this.role = data.currentUser.role;
-          }
-        }
-        if (!this.currentUser) {
-          this.setRole('MARKETING');
-        }
-      } catch (e) {
+      const stored = readStorage();
+      if (stored && stored.role) {
+        this.currentUser = stored;
+        this.role = stored.role;
+      } else {
         this.setRole('MARKETING');
       }
     }

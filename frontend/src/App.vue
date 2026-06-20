@@ -18,7 +18,7 @@
               </a-select>
             </span>
             <span v-if="userStore.currentUser">
-              <UserOutlined /> {{ userStore.currentUser.name }}
+              <UserOutlined /> {{ userStore.currentUser.displayName || userStore.currentUser.name }}
             </span>
           </a-space>
         </div>

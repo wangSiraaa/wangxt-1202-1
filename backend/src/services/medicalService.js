@@ -6,9 +6,13 @@ const {
   canTransition,
   checkOffLabelContent 
 } = require('../utils/validation');
-const { getMaterialById } = require('./materialService');
+const { getMaterialById, getMaterialDetail } = require('./materialService');
 
 function submitMedicalOpinion(materialId, data, operator) {
+  if (!operator) {
+    throw new Error('审核人信息缺失，无法提交医学审核意见');
+  }
+
   const material = getMaterialById(materialId);
   if (!material) {
     throw new Error('素材不存在');
@@ -27,20 +31,31 @@ function submitMedicalOpinion(materialId, data, operator) {
     is_approved
   } = data;
 
-  const safeSuggestion = suggestion !== undefined ? suggestion : null;
-  const safeOpinion = opinion !== undefined ? opinion : null;
+  const safeSuggestion = suggestion !== undefined && suggestion !== null ? suggestion : null;
+  const safeOpinion = opinion !== undefined && opinion !== null ? opinion : null;
 
-  const evidenceCheck = checkMedicalEvidence(material.medical_evidence);
-  if (!evidenceCheck.isValid) {
-    throw new Error(evidenceCheck.reason);
+  const approved = parseInt(is_approved) === 1;
+  const evidenceMissing = parseInt(evidence_check) === 0;
+
+  if (evidenceMissing) {
+    const evidenceCheck = checkMedicalEvidence(material.medical_evidence);
+    if (!evidenceCheck.isValid && approved) {
+      throw new Error('医学证据缺失，不能审核通过，请驳回并退回市场部补充证据');
+    }
+  }
+
+  if (approved) {
+    const evidenceCheck = checkMedicalEvidence(material.medical_evidence);
+    if (!evidenceCheck.isValid) {
+      throw new Error(evidenceCheck.reason);
+    }
   }
 
   const offLabelCheck = checkOffLabelContent(material.content, material.indication);
-  if (!offLabelCheck.isValid) {
-    throw new Error(`内容包含超说明书表述：${offLabelCheck.violations.join('、')}`);
+  if (!offLabelCheck.isValid && approved) {
+    throw new Error(`内容包含超说明书表述：${offLabelCheck.violations.join('、')}，不能审核通过`);
   }
 
-  const approved = parseInt(is_approved) === 1;
   const newVersion = material.version + 1;
   const targetStatus = approved ? 'PENDING_LEGAL' : 'MEDICAL_REJECTED';
   const targetStep = approved ? 'LEGAL' : 'MARKETING';
@@ -86,12 +101,13 @@ function submitMedicalOpinion(materialId, data, operator) {
       operatorRole: 'MEDICAL',
       fromStatus: material.status,
       toStatus: targetStatus,
-      remark: `${actionName}：${opinion || (approved ? '适应症、禁忌、医学证据均符合要求' : '审核不通过')}`,
+      remark: `${actionName}：${safeOpinion || (approved ? '适应症、禁忌、医学证据均符合要求' : '审核不通过')}`,
       changes: {
-        indication_check,
-        contraindication_check,
-        evidence_check,
-        suggestion
+        indication_check: indication_check ? 1 : 0,
+        contraindication_check: contraindication_check ? 1 : 0,
+        evidence_check: evidence_check ? 1 : 0,
+        reviewer: operator,
+        suggestion: safeSuggestion
       }
     });
 
@@ -101,10 +117,14 @@ function submitMedicalOpinion(materialId, data, operator) {
     throw new Error(`医学审核失败：${e.message}`);
   }
 
+  const updatedMaterial = getMaterialDetail(materialId);
+
   return {
     success: true,
     status: targetStatus,
-    message: approved ? '医学审核通过，已提交法务审核' : '医学审核已驳回'
+    reviewer: operator,
+    message: approved ? '医学审核通过，已提交法务审核' : '医学审核已驳回，素材已退回市场部',
+    data: updatedMaterial
   };
 }
 

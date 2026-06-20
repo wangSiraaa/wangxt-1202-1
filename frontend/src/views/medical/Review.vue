@@ -247,6 +247,11 @@ const checkEvidence = () => {
 };
 
 const handleSubmit = () => {
+  if (formData.is_approved === 1 && formData.evidence_check === 0) {
+    message.error('医学证据缺失，不能审核通过，请驳回并退回市场部补充证据');
+    return;
+  }
+
   const actionText = formData.is_approved === 1 ? '通过并提交法务' : '驳回并退回市场部';
   Modal.confirm({
     title: `确认${actionText}？`,
@@ -258,8 +263,14 @@ const handleSubmit = () => {
     onOk: async () => {
       submitting.value = true;
       try {
-        await medicalApi.submit(route.params.id, formData);
-        message.success(formData.is_approved === 1 ? '审核通过，已提交法务审核' : '审核已驳回');
+        const result = await medicalApi.submit(route.params.id, formData);
+        const expectedStatus = formData.is_approved === 1 ? 'PENDING_LEGAL' : 'MEDICAL_REJECTED';
+        const returnedStatus = result.status || result.data?.status;
+        if (returnedStatus && returnedStatus !== expectedStatus) {
+          message.warning(`状态流转异常：期望 ${expectedStatus}，实际 ${returnedStatus}`);
+        } else {
+          message.success(formData.is_approved === 1 ? '审核通过，已提交法务审核' : '审核已驳回，素材已退回市场部');
+        }
         router.push('/medical');
       } catch (e) {
         message.error(e.message);

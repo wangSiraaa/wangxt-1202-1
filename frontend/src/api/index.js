@@ -1,22 +1,37 @@
 import axios from 'axios';
 
+const DEFAULT_USER = { name: 'ZhangMarket', role: 'MARKETING' };
+
+function getCurrentUser() {
+  try {
+    const raw = localStorage.getItem('userStore');
+    if (raw) {
+      const data = JSON.parse(raw);
+      if (data && data.currentUser && data.currentUser.name && data.currentUser.role) {
+        return data.currentUser;
+      }
+    }
+  } catch (e) {
+    // ignore parse errors
+  }
+  return DEFAULT_USER;
+}
+
 const request = axios.create({
   baseURL: '/api',
   timeout: 10000
 });
 
 request.interceptors.request.use((config) => {
-  const userStore = JSON.parse(localStorage.getItem('userStore') || '{}');
-  if (userStore.currentUser) {
-    config.headers['x-operator'] = userStore.currentUser.name;
-    config.headers['x-role'] = userStore.currentUser.role;
-  }
+  const user = getCurrentUser();
+  config.headers['x-operator'] = user.name;
+  config.headers['x-role'] = user.role;
   return config;
 });
 
 request.interceptors.response.use(
   (response) => {
-    if (response.data.success === false) {
+    if (response.data && response.data.success === false) {
       return Promise.reject(new Error(response.data.error || '请求失败'));
     }
     return response.data;
