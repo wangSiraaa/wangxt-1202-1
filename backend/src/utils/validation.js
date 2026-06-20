@@ -7,6 +7,14 @@ const OFF_LABEL_KEYWORDS = [
   '第一', '唯一', '特效', '速效', '神效', '灵丹妙药'
 ];
 
+const CHANNEL_TYPES = ['POSTER', 'SHORT_VIDEO', 'LIVE_BROADCAST'];
+
+const CHANNEL_NAME_MAP = {
+  POSTER: '海报',
+  SHORT_VIDEO: '短视频',
+  LIVE_BROADCAST: '直播口播'
+};
+
 const STATUS_FLOW = {
   DRAFT: { next: 'PENDING_MEDICAL', allowedRoles: ['MARKETING'] },
   PENDING_MEDICAL: { next: 'MEDICAL_REVIEW', allowedRoles: ['MEDICAL'] },
@@ -123,6 +131,112 @@ function isMaterialLocked(materialId) {
   return { locked: false };
 }
 
+function isValidChannel(channel) {
+  return CHANNEL_TYPES.includes(channel);
+}
+
+function getChannelName(channel) {
+  return CHANNEL_NAME_MAP[channel] || channel || '海报';
+}
+
+function checkEvidenceSource(evidenceSource) {
+  if (!evidenceSource || !evidenceSource.trim()) {
+    return {
+      isValid: false,
+      reason: '证据来源不能为空，请标明证据来源（如临床试验、文献、药监批准文件等）'
+    };
+  }
+  const trimmed = evidenceSource.trim();
+  if (trimmed.length < 4) {
+    return {
+      isValid: false,
+      reason: '证据来源描述过于简略，请提供具体的证据来源说明'
+    };
+  }
+  return { isValid: true };
+}
+
+function checkChannelDuplicate(themeId, channel, excludeMaterialId = null) {
+  if (!themeId || !channel) {
+    return { isDuplicate: false };
+  }
+  let sql = `
+    SELECT id, title FROM materials
+    WHERE theme_id = ? AND channel = ? AND is_deleted = 0
+  `;
+  const params = [themeId, channel];
+  if (excludeMaterialId) {
+    sql += ' AND id <> ?';
+    params.push(excludeMaterialId);
+  }
+  const existing = db.prepare(sql).get(...params);
+  if (existing) {
+    return {
+      isDuplicate: true,
+      reason: `同一主题下已存在该渠道素材：${existing.title}`,
+      existingId: existing.id
+    };
+  }
+  return { isDuplicate: false };
+}
+
+function validateChannelRevision(materialId, revisionReason) {
+  const material = db.prepare(`
+    SELECT * FROM materials WHERE id = ? AND is_deleted = 0
+  `).get(materialId);
+
+  if (!material) {
+    return { isValid: false, reason: '原素材不存在，无法创建渠道修订版本' };
+  }
+
+  if (material.status !== 'PUBLISHED') {
+    return {
+      isValid: false,
+      reason: `只有已发布的素材才能创建渠道修订版本，当前状态：${material.status}`
+    };
+  }
+
+  if (!revisionReason || !revisionReason.trim()) {
+    return {
+      isValid: false,
+      reason: '创建渠道修订版本必须填写修订原因（如渠道要求更改风险措辞）'
+    };
+  }
+
+  return { isValid: true, material };
+}
+
+function snapshotEvidenceVersion({ materialId, themeId, channel, version, evidenceSource, medicalEvidence, operator }) {
+  const { v4: uuidv4 } = require('uuid');
+  const id = uuidv4();
+  db.prepare(`
+    INSERT INTO evidence_versions (
+      id, material_id, theme_id, channel, version,
+      evidence_source, medical_evidence, snapshot_by
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id, materialId, themeId, channel, version,
+    evidenceSource || null, medicalEvidence, operator
+  );
+  return id;
+}
+
+function compareEvidenceVersions(versionAId, versionBId) {
+  const a = db.prepare('SELECT * FROM evidence_versions WHERE id = ?').get(versionAId);
+  const b = db.prepare('SELECT * FROM evidence_versions WHERE id = ?').get(versionBId);
+  if (!a || !b) {
+    return { comparable: false, reason: '证据版本不存在，无法比对' };
+  }
+  const diff = {
+    evidence_source_changed: (a.evidence_source || '') !== (b.evidence_source || ''),
+    medical_evidence_changed: (a.medical_evidence || '') !== (b.medical_evidence || ''),
+    version_a: a,
+    version_b: b
+  };
+  diff.has_changes = diff.evidence_source_changed || diff.medical_evidence_changed;
+  return { comparable: true, diff };
+}
+
 module.exports = {
   checkOffLabelContent,
   checkMedicalEvidence,
@@ -131,5 +245,14 @@ module.exports = {
   canTransition,
   isMaterialLocked,
   STATUS_FLOW,
-  OFF_LABEL_KEYWORDS
+  OFF_LABEL_KEYWORDS,
+  CHANNEL_TYPES,
+  CHANNEL_NAME_MAP,
+  isValidChannel,
+  getChannelName,
+  checkEvidenceSource,
+  checkChannelDuplicate,
+  validateChannelRevision,
+  snapshotEvidenceVersion,
+  compareEvidenceVersions
 };

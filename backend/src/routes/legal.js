@@ -34,6 +34,15 @@ router.get('/:materialId/opinions', (req, res) => {
   }
 });
 
+router.get('/:materialId/rejection-reasons', (req, res) => {
+  try {
+    const result = legalService.getRejectionReasons(req.params.materialId);
+    res.json({ success: true, data: result });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
 router.get('/published', (req, res) => {
   try {
     const result = legalService.getPublishedList(req.query);

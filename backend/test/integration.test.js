@@ -14,6 +14,7 @@ function createValidMaterial(extra = {}) {
     indication: '用于治疗2型糖尿病',
     contraindication: '孕妇禁用',
     medical_evidence: '三期临床试验数据支持，N Engl J Med 2023',
+    evidence_source: '国家药品监督管理局批准的说明书及三期临床试验报告',
     risk_warning: '可能引起低血糖反应，请仔细阅读说明书',
     ...extra
   };
@@ -272,7 +273,8 @@ describe('药品广告合规审查系统 - 集成测试', () => {
           evidence_check: 0,
           is_approved: 0,
           opinion: '医学证据不充分，请补充临床试验数据。',
-          suggestion: '请提供三期临床试验报告或权威文献支持。'
+          suggestion: '请提供三期临床试验报告或权威文献支持。',
+          rejection_reason: '医学证据不充分，需补充三期临床试验报告'
         })
         .set(MEDICAL_HEADERS);
 

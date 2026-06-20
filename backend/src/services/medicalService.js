@@ -4,7 +4,9 @@ const { recordTrail } = require('../utils/auditTrail');
 const { 
   checkMedicalEvidence, 
   canTransition,
-  checkOffLabelContent 
+  checkOffLabelContent,
+  checkEvidenceSource,
+  getChannelName 
 } = require('../utils/validation');
 const { getMaterialById, getMaterialDetail } = require('./materialService');
 
@@ -28,7 +30,9 @@ function submitMedicalOpinion(materialId, data, operator) {
     evidence_check,
     opinion,
     suggestion,
-    is_approved
+    is_approved,
+    rejection_reason,
+    evidence_source
   } = data;
 
   const safeSuggestion = suggestion !== undefined && suggestion !== null ? suggestion : null;
@@ -56,6 +60,22 @@ function submitMedicalOpinion(materialId, data, operator) {
     throw new Error(`内容包含超说明书表述：${offLabelCheck.violations.join('、')}，不能审核通过`);
   }
 
+  const finalEvidenceSource = evidence_source !== undefined && evidence_source !== null
+    ? evidence_source
+    : material.evidence_source;
+
+  if (approved) {
+    const sourceCheck = checkEvidenceSource(finalEvidenceSource);
+    if (!sourceCheck.isValid) {
+      throw new Error(sourceCheck.reason);
+    }
+  }
+
+  if (!approved && (!rejection_reason || !rejection_reason.trim())) {
+    throw new Error('驳回时必须填写退回原因，以便市场部针对性补充修改');
+  }
+
+  const safeRejectionReason = !approved && rejection_reason ? rejection_reason.trim() : null;
   const newVersion = material.version + 1;
   const targetStatus = approved ? 'PENDING_LEGAL' : 'MEDICAL_REJECTED';
   const targetStep = approved ? 'LEGAL' : 'MARKETING';
@@ -67,8 +87,9 @@ function submitMedicalOpinion(materialId, data, operator) {
     const opinionStmt = db.prepare(`
       INSERT INTO medical_opinions (
         id, material_id, version, reviewer, indication_check,
-        contraindication_check, evidence_check, opinion, suggestion, is_approved
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        contraindication_check, evidence_check, opinion, suggestion, is_approved,
+        rejection_reason, evidence_source, channel
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     opinionStmt.run(
       uuidv4(),
@@ -80,7 +101,10 @@ function submitMedicalOpinion(materialId, data, operator) {
       evidence_check ? 1 : 0,
       safeOpinion,
       safeSuggestion,
-      approved ? 1 : 0
+      approved ? 1 : 0,
+      safeRejectionReason,
+      finalEvidenceSource,
+      material.channel
     );
 
     const updateStmt = db.prepare(`
@@ -101,13 +125,17 @@ function submitMedicalOpinion(materialId, data, operator) {
       operatorRole: 'MEDICAL',
       fromStatus: material.status,
       toStatus: targetStatus,
-      remark: `${actionName}：${safeOpinion || (approved ? '适应症、禁忌、医学证据均符合要求' : '审核不通过')}`,
+      remark: approved
+        ? `${actionName}（${getChannelName(material.channel)}）：${safeOpinion || '适应症、禁忌、证据来源均符合要求'}`
+        : `${actionName}（${getChannelName(material.channel)}），退回原因：${safeRejectionReason}`,
       changes: {
         indication_check: indication_check ? 1 : 0,
         contraindication_check: contraindication_check ? 1 : 0,
         evidence_check: evidence_check ? 1 : 0,
+        evidence_source: finalEvidenceSource,
         reviewer: operator,
-        suggestion: safeSuggestion
+        suggestion: safeSuggestion,
+        rejection_reason: safeRejectionReason
       }
     });
 
@@ -123,13 +151,16 @@ function submitMedicalOpinion(materialId, data, operator) {
     success: true,
     status: targetStatus,
     reviewer: operator,
-    message: approved ? '医学审核通过，已提交法务审核' : '医学审核已驳回，素材已退回市场部',
+    channel: material.channel,
+    message: approved 
+      ? `${getChannelName(material.channel)}医学审核通过，已提交法务审核` 
+      : `${getChannelName(material.channel)}医学审核已驳回，素材已退回市场部`,
     data: updatedMaterial
   };
 }
 
 function getPendingMedicalList(params = {}) {
-  const { page = 1, pageSize = 10, keyword } = params;
+  const { page = 1, pageSize = 10, keyword, channel } = params;
   
   let whereClauses = [
     'is_deleted = 0',
@@ -140,6 +171,10 @@ function getPendingMedicalList(params = {}) {
   if (keyword) {
     whereClauses.push('(title LIKE ? OR drug_name LIKE ?)');
     queryParams.push(`%${keyword}%`, `%${keyword}%`);
+  }
+  if (channel) {
+    whereClauses.push('channel = ?');
+    queryParams.push(channel);
   }
 
   const offset = (page - 1) * pageSize;
@@ -169,7 +204,13 @@ function getMedicalOpinions(materialId) {
   const stmt = db.prepare(`
     SELECT 
       o.*,
-      CASE WHEN o.is_approved = 1 THEN '通过' ELSE '驳回' END as result
+      CASE WHEN o.is_approved = 1 THEN '通过' ELSE '驳回' END as result,
+      CASE 
+        WHEN o.channel = 'POSTER' THEN '海报'
+        WHEN o.channel = 'SHORT_VIDEO' THEN '短视频'
+        WHEN o.channel = 'LIVE_BROADCAST' THEN '直播口播'
+        ELSE o.channel
+      END as channel_name
     FROM medical_opinions o
     WHERE o.material_id = ?
     ORDER BY o.created_at DESC, o.version DESC
@@ -177,8 +218,25 @@ function getMedicalOpinions(materialId) {
   return stmt.all(materialId);
 }
 
+function getRejectionReasons(materialId) {
+  return db.prepare(`
+    SELECT 
+      id, version, reviewer, rejection_reason, opinion, suggestion,
+      channel, created_at
+    FROM medical_opinions
+    WHERE material_id = ? AND is_approved = 0 AND rejection_reason IS NOT NULL
+    ORDER BY created_at DESC
+  `).all(materialId).map(o => ({
+    ...o,
+    stage: 'MEDICAL',
+    stage_name: '医学审核',
+    channel_name: getChannelName(o.channel)
+  }));
+}
+
 module.exports = {
   submitMedicalOpinion,
   getPendingMedicalList,
-  getMedicalOpinions
+  getMedicalOpinions,
+  getRejectionReasons
 };

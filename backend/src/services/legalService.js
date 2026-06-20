@@ -5,7 +5,8 @@ const {
   checkApprovalNumber, 
   checkRiskWarning,
   checkOffLabelContent,
-  canTransition 
+  canTransition,
+  getChannelName
 } = require('../utils/validation');
 const { getMaterialById, getMaterialDetail } = require('./materialService');
 
@@ -29,7 +30,8 @@ function submitLegalOpinion(materialId, data, operator) {
     off_label_check,
     opinion,
     suggestion,
-    is_approved
+    is_approved,
+    rejection_reason
   } = data;
 
   const safeSuggestion = suggestion !== undefined && suggestion !== null ? suggestion : null;
@@ -54,19 +56,29 @@ function submitLegalOpinion(materialId, data, operator) {
     }
   }
 
+  if (!approved && (!rejection_reason || !rejection_reason.trim())) {
+    throw new Error('驳回时必须填写退回原因，以便市场部针对性修改');
+  }
+
+  const safeRejectionReason = !approved && rejection_reason ? rejection_reason.trim() : null;
+
   const newVersion = material.version + 1;
   const targetStatus = approved ? 'PUBLISHED' : 'LEGAL_REJECTED';
   const targetStep = approved ? 'PUBLISHED' : 'MARKETING';
   const action = approved ? 'LEGAL_APPROVE' : 'LEGAL_REJECT';
   const actionName = approved ? '法务审核通过' : '法务审核驳回';
+  const revisionTag = material.revised_from_id
+    ? `（渠道修订发布，原素材：${material.revised_from_id}，修订原因：${material.revision_reason || '未填写'}）`
+    : '';
 
   db.exec('BEGIN');
   try {
     const opinionStmt = db.prepare(`
       INSERT INTO legal_opinions (
         id, material_id, version, reviewer, approval_number_check,
-        risk_warning_check, off_label_check, opinion, suggestion, is_approved
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        risk_warning_check, off_label_check, opinion, suggestion, is_approved,
+        rejection_reason, channel
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     opinionStmt.run(
       uuidv4(),
@@ -78,7 +90,9 @@ function submitLegalOpinion(materialId, data, operator) {
       off_label_check ? 1 : 0,
       safeOpinion,
       safeSuggestion,
-      approved ? 1 : 0
+      approved ? 1 : 0,
+      safeRejectionReason,
+      material.channel
     );
 
     if (approved) {
@@ -86,8 +100,9 @@ function submitLegalOpinion(materialId, data, operator) {
         INSERT INTO published_versions (
           id, material_id, version, title, content, drug_name,
           approval_number, indication, contraindication, medical_evidence,
-          risk_warning, published_by
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          risk_warning, published_by, channel, evidence_source,
+          revision_reason, revised_from_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       publishStmt.run(
         uuidv4(),
@@ -101,7 +116,11 @@ function submitLegalOpinion(materialId, data, operator) {
         material.contraindication,
         material.medical_evidence,
         material.risk_warning,
-        operator
+        operator,
+        material.channel,
+        material.evidence_source,
+        material.revision_reason || null,
+        material.revised_from_id || null
       );
     }
 
@@ -124,14 +143,15 @@ function submitLegalOpinion(materialId, data, operator) {
       fromStatus: material.status,
       toStatus: targetStatus,
       remark: approved 
-        ? `${actionName}，版本已发布并锁定，不可修改` 
-        : `${actionName}：${safeOpinion || '审核不通过'}`,
+        ? `${actionName}（${getChannelName(material.channel)}）${revisionTag}，版本已发布并锁定，不可修改` 
+        : `${actionName}（${getChannelName(material.channel)}），退回原因：${safeRejectionReason}`,
       changes: {
         approval_number_check: approval_number_check ? 1 : 0,
         risk_warning_check: risk_warning_check ? 1 : 0,
         off_label_check: off_label_check ? 1 : 0,
         reviewer: operator,
-        suggestion: safeSuggestion
+        suggestion: safeSuggestion,
+        rejection_reason: safeRejectionReason
       }
     });
 
@@ -147,15 +167,16 @@ function submitLegalOpinion(materialId, data, operator) {
     success: true,
     status: targetStatus,
     reviewer: operator,
+    channel: material.channel,
     message: approved 
-      ? '法务审核通过，版本已发布并锁定，不可修改' 
-      : '法务审核已驳回，素材已退回市场部',
+      ? `${getChannelName(material.channel)}法务审核通过${revisionTag}，版本已发布并锁定，不可修改` 
+      : `${getChannelName(material.channel)}法务审核已驳回，素材已退回市场部`,
     data: updatedMaterial
   };
 }
 
 function getPendingLegalList(params = {}) {
-  const { page = 1, pageSize = 10, keyword } = params;
+  const { page = 1, pageSize = 10, keyword, channel } = params;
   
   let whereClauses = [
     'is_deleted = 0',
@@ -166,6 +187,10 @@ function getPendingLegalList(params = {}) {
   if (keyword) {
     whereClauses.push('(title LIKE ? OR drug_name LIKE ?)');
     queryParams.push(`%${keyword}%`, `%${keyword}%`);
+  }
+  if (channel) {
+    whereClauses.push('channel = ?');
+    queryParams.push(channel);
   }
 
   const offset = (page - 1) * pageSize;
@@ -195,7 +220,13 @@ function getLegalOpinions(materialId) {
   const stmt = db.prepare(`
     SELECT 
       o.*,
-      CASE WHEN o.is_approved = 1 THEN '通过' ELSE '驳回' END as result
+      CASE WHEN o.is_approved = 1 THEN '通过' ELSE '驳回' END as result,
+      CASE 
+        WHEN o.channel = 'POSTER' THEN '海报'
+        WHEN o.channel = 'SHORT_VIDEO' THEN '短视频'
+        WHEN o.channel = 'LIVE_BROADCAST' THEN '直播口播'
+        ELSE o.channel
+      END as channel_name
     FROM legal_opinions o
     WHERE o.material_id = ?
     ORDER BY o.created_at DESC, o.version DESC
@@ -203,8 +234,48 @@ function getLegalOpinions(materialId) {
   return stmt.all(materialId);
 }
 
+function getRejectionReasons(materialId) {
+  return db.prepare(`
+    SELECT 
+      id, version, reviewer, rejection_reason, opinion, suggestion,
+      channel, created_at
+    FROM legal_opinions
+    WHERE material_id = ? AND is_approved = 0 AND rejection_reason IS NOT NULL
+    ORDER BY created_at DESC
+  `).all(materialId).map(o => ({
+    ...o,
+    stage: 'LEGAL',
+    stage_name: '法务审核',
+    channel_name: getChannelName(o.channel)
+  }));
+}
+
+function getAllRejectionReasons(materialId) {
+  const medicalReasons = db.prepare(`
+    SELECT 'MEDICAL' as stage, id, version, reviewer, rejection_reason,
+           opinion, suggestion, channel, created_at
+    FROM medical_opinions
+    WHERE material_id = ? AND is_approved = 0 AND rejection_reason IS NOT NULL
+  `).all(materialId);
+
+  const legalReasons = db.prepare(`
+    SELECT 'LEGAL' as stage, id, version, reviewer, rejection_reason,
+           opinion, suggestion, channel, created_at
+    FROM legal_opinions
+    WHERE material_id = ? AND is_approved = 0 AND rejection_reason IS NOT NULL
+  `).all(materialId);
+
+  return [...medicalReasons, ...legalReasons]
+    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+    .map(r => ({
+      ...r,
+      stage_name: r.stage === 'MEDICAL' ? '医学审核' : '法务审核',
+      channel_name: getChannelName(r.channel)
+    }));
+}
+
 function getPublishedList(params = {}) {
-  const { page = 1, pageSize = 10, keyword } = params;
+  const { page = 1, pageSize = 10, keyword, channel } = params;
   
   let whereClauses = ['is_locked = 1'];
   let queryParams = [];
@@ -212,6 +283,10 @@ function getPublishedList(params = {}) {
   if (keyword) {
     whereClauses.push('(title LIKE ? OR drug_name LIKE ?)');
     queryParams.push(`%${keyword}%`, `%${keyword}%`);
+  }
+  if (channel) {
+    whereClauses.push('channel = ?');
+    queryParams.push(channel);
   }
 
   const offset = (page - 1) * pageSize;
@@ -248,6 +323,8 @@ module.exports = {
   submitLegalOpinion,
   getPendingLegalList,
   getLegalOpinions,
+  getRejectionReasons,
+  getAllRejectionReasons,
   getPublishedList,
   getPublishedDetail
 };

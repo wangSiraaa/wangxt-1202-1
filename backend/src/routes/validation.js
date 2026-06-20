@@ -5,7 +5,12 @@ const {
   checkOffLabelContent,
   checkApprovalNumber,
   checkMedicalEvidence,
-  checkRiskWarning
+  checkRiskWarning,
+  checkEvidenceSource,
+  isValidChannel,
+  checkChannelDuplicate,
+  CHANNEL_TYPES,
+  CHANNEL_NAME_MAP
 } = require('../utils/validation');
 
 router.post('/offlabel', (req, res) => {
@@ -51,6 +56,44 @@ router.post('/risk-warning', (req, res) => {
       return res.status(400).json({ error: 'content和riskWarning参数不能为空' });
     }
     const result = checkRiskWarning(content, riskWarning);
+    res.json({ success: true, ...result });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.get('/channels', (req, res) => {
+  res.json({
+    success: true,
+    data: CHANNEL_TYPES.map(c => ({ code: c, name: CHANNEL_NAME_MAP[c] }))
+  });
+});
+
+router.post('/channel', (req, res) => {
+  try {
+    const { channel, theme_id } = req.body || {};
+    if (!channel) {
+      return res.status(400).json({ error: 'channel参数不能为空' });
+    }
+    const valid = isValidChannel(channel);
+    const dup = valid && theme_id ? checkChannelDuplicate(theme_id, channel) : { isDuplicate: false };
+    res.json({
+      success: true,
+      isValid: valid,
+      channel_name: CHANNEL_NAME_MAP[channel] || channel,
+      is_duplicate: dup.isDuplicate,
+      duplicate_reason: dup.reason || null,
+      supported: CHANNEL_TYPES
+    });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+router.post('/evidence-source', (req, res) => {
+  try {
+    const { evidenceSource } = req.body || {};
+    const result = checkEvidenceSource(evidenceSource);
     res.json({ success: true, ...result });
   } catch (e) {
     res.status(400).json({ error: e.message });

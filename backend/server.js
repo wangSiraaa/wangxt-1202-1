@@ -45,10 +45,12 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: '服务器内部错误', message: err.message });
 });
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 药品广告合规审查系统后端服务已启动`);
-  console.log(`📡 服务地址: http://0.0.0.0:${PORT}`);
-  console.log(`💾 数据库: ${path.join(__dirname, 'data/drug_ad_review.db')}`);
-});
+if (require.main === module) {
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 药品广告合规审查系统后端服务已启动`);
+    console.log(`📡 服务地址: http://0.0.0.0:${PORT}`);
+    console.log(`💾 数据库: ${path.join(__dirname, 'data/drug_ad_review.db')}`);
+  });
+}
 
 module.exports = app;
